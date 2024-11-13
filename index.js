@@ -1,35 +1,4 @@
-// const express = require('express');
-// const bodyParser = require('body-parser');
-// const { App } = require('@slack/bolt');
-// const { handleCommand } = require('./slack/commands');
-// const { handleInteraction } = require('./slack/interactions');
-
-// require('dotenv').config();
-
-// const app = express();
-// app.use(bodyParser.urlencoded({ extended: true }));
-// app.use(bodyParser.json());
-
-// const slackApp = new App({
-//   token: process.env.SLACK_BOT_TOKEN,
-//   signingSecret: process.env.SLACK_SIGNING_SECRET
-// });
-
-// // Slash command endpoint
-// app.post('/slack/commands', async (req, res) => {
-//   await handleCommand(req, res, slackApp.client);
-// });
-
-// // Interactivity endpoint
-// app.post('/slack/interactions', async (req, res) => {
-//   await handleInteraction(req, res, slackApp.client);
-// });
-
-// app.listen(process.env.PORT, () => {
-//   console.log(`Server running on port ${process.env.PORT}`);
-// });
-
-const {App} = require("@slack/bolt");
+const { App } = require('@slack/bolt');
 require('dotenv').config();
 
 const app = new App({
@@ -39,50 +8,156 @@ const app = new App({
     socketMode: true,
 });
 
-app.command("/hello", async ({command, ack, say}) => {
+// Slash command to open the approval request modal
+app.command('/approval-test', async ({ command, ack, client }) => {
     await ack();
 
-    await say(`Hello, <@${command.user_id}>`);
+    try {
+        // Open the modal to get approver and approval text
+        await client.views.open({
+            trigger_id: command.trigger_id,
+            view: {
+                type: 'modal',
+                callback_id: 'approval_request_modal',
+                title: {
+                    type: 'plain_text',
+                    text: 'Request Approval'
+                },
+                blocks: [
+                    {
+                        type: 'input',
+                        block_id: 'approver_block',
+                        label: {
+                            type: 'plain_text',
+                            text: 'Select Approver'
+                        },
+                        element: {
+                            type: 'users_select',
+                            action_id: 'approver',
+                            placeholder: {
+                                type: 'plain_text',
+                                text: 'Choose an approver'
+                            }
+                        }
+                    },
+                    {
+                        type: 'input',
+                        block_id: 'approval_text_block',
+                        label: {
+                            type: 'plain_text',
+                            text: 'Approval Details'
+                        },
+                        element: {
+                            type: 'plain_text_input',
+                            action_id: 'approval_text',
+                            multiline: true
+                        }
+                    }
+                ],
+                submit: {
+                    type: 'plain_text',
+                    text: 'Submit'
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error opening modal:', error);
+    }
 });
 
-app.command('/say_name', async ({command, ack, say}) => {
+// Handle modal submission
+app.view('approval_request_modal', async ({ ack, body, view, client }) => {
     await ack();
 
-    const name= command.text;
+    const approverId = view.state.values.approver_block.approver.selected_user;
+    const approvalText = view.state.values.approval_text_block.approval_text.value;
+    const requesterId = body.user.id;
 
-    await say(`Your name is ${name}`);
+    try {
+        // Send message to approver with approval options
+        const result = await client.chat.postMessage({
+            channel: approverId,
+            text: `Approval Request:\n${approvalText}`,
+            blocks: [
+                {
+                    type: 'section',
+                    text: {
+                        type: 'mrkdwn',
+                        text: `*Approval Request from <@${requesterId}>:*\n${approvalText}`
+                    }
+                },
+                {
+                    type: 'actions',
+                    block_id: 'approval_actions',
+                    elements: [
+                        {
+                            type: 'button',
+                            text: {
+                                type: 'plain_text',
+                                text: 'Approve'
+                            },
+                            style: 'primary',
+                            action_id: 'approve_request',
+                            value: requesterId
+                        },
+                        {
+                            type: 'button',
+                            text: {
+                                type: 'plain_text',
+                                text: 'Reject'
+                            },
+                            style: 'danger',
+                            action_id: 'reject_request',
+                            value: requesterId
+                        }
+                    ]
+                }
+            ]
+        });
+
+        console.log('Approval request sent to approver:', result.ts);
+    } catch (error) {
+        console.error('Error sending approval request:', error);
+    }
 });
 
-app.command('/add_numbers', async ({ command, ack, say }) => {
-	await ack();
+// Handle approval or rejection actions
+app.action({ block_id: 'approval_actions', action_id: /^(approve_request|reject_request)$/ }, async ({ ack, body, action, client }) => {
+    await ack();
 
-	const numbers = command.text.split(' ');
+    const requesterId = action.value;
+    const approverId = body.user.id;
+    const decision = action.action_id === 'approve_request' ? 'approved' : 'rejected';
 
-	const sum = numbers.reduce((a, b) => parseInt(a) + parseInt(b), 0);
+    try {
+        // Notify requester of the decision
+        await client.chat.postMessage({
+            channel: requesterId,
+            text: `Your request has been ${decision} by <@${approverId}>.`,
+        });
 
-	await say(`The sum is ${sum}`);
+        // Optionally update the approver's message
+        await client.chat.update({
+            channel: body.channel.id,
+            ts: body.message.ts,
+            text: `Request ${decision} by <@${approverId}>`,
+            blocks: [
+                {
+                    type: 'section',
+                    text: {
+                        type: 'mrkdwn',
+                        text: `*Request ${decision} by <@${approverId}>*`
+                    }
+                }
+            ]
+        });
+    } catch (error) {
+        console.error('Error sending decision notification:', error);
+    }
 });
 
-
-app.command('/random_quote', async ({ command, ack, say }) => {
-	await ack();
-
-	const quotes = await fetch('https://type.fit/api/quotes');
-	const response = await quotes.json();
-
-	const randomIndex = Math.floor(Math.random() * response.length);
-
-	const randomQuote = response[randomIndex];
-
-    const randomQuoteAuthor = randomQuote.author.replace(/,type\.fit/g, '');
-
-	await say(`"${randomQuote.text}" - ${randomQuoteAuthor}`);
-});
-
-
-
-(async ()=> {
-    //Start your app
+(async () => {
+    // Start your app
     await app.start(process.env.PORT || 3000);
-    console.log(`Bot app is running  on port ${process.env.PORT || 3000}!`);
+    console.log(`⚡️ Slack bot is running on port ${process.env.PORT || 3000}!`);
 })();
